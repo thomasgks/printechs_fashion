@@ -67,6 +67,7 @@ app_license = "mit"
 # Generators
 # ----------
 
+
 # automatically create page for each record of this doctype
 # website_generators = ["Web Page"]
 
@@ -253,3 +254,9 @@ doc_events = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
 
+fixtures = [
+    {
+        "dt": "Custom Field",
+        "filters": [["name", "in", ("custom_dcs", "custom_vendor_cost","custom_exchange_rate","custom_vendor_currency","custom_vendor_name","custom_vendor_code","custom_column_break_vbtwc","custom_bin_no","custom_image_url","custom_material","custom_style_code","custom_fashion","custom_item_name_ar")]]
+    }
+]
