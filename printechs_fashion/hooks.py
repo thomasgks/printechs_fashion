@@ -136,6 +136,17 @@ app_license = "mit"
 # Document Events
 # ---------------
 # Hook on document methods and events
+doc_events = {
+    "Item Attribute Value": {
+        "on_update": "printechs_fashion.api.insert_item_attribute_value"
+    },
+    "Sales Order": {
+        "on_submit": "printechs_fashion.animo_connector.send_sales_order_to_animo"
+    },
+     "Sales Invoice": {
+        "on_submit": "printechs_fashion.animo_connector.send_sales_invoice_to_animo"
+    }
+}
 
 # doc_events = {
 # 	"*": {
