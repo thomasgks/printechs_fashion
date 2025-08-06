@@ -141,14 +141,16 @@ doc_events = {
     "Item Attribute Value": {
         "on_update": "printechs_fashion.api.insert_item_attribute_value"
     },
-    "Sales Order": {
-        "on_submit": "printechs_fashion.animo_connector.send_sales_order_to_animo"
+   "Sales Order": {
+        "on_submit": "printechs_fashion.animo_connector.enqueue_animo_order_sync",
+        "on_cancel": "printechs_fashion.animo_connector.enqueue_animo_order_cancel"
     },
-     "Sales Invoice": {
-        "on_submit": "printechs_fashion.animo_connector.send_sales_invoice_to_animo"
+    "Sales Invoice": {
+        "on_submit": "printechs_fashion.animo_connector.enqueue_animo_invoice_sync"
     }
 }
 
+after_migrate = "printechs_fashion.animo_connector.setup_custom_fields"
 # doc_events = {
 # 	"*": {
 # 		"on_update": "method",
