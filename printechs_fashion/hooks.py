@@ -259,6 +259,6 @@ after_migrate = "printechs_fashion.animo_connector.setup_custom_fields"
 fixtures = [
     {
         "dt": "Custom Field",
-        "filters": [["name", "in", ("custom_dcs", "custom_vendor_cost","custom_exchange_rate","custom_vendor_currency","custom_vendor_name","custom_vendor_code","custom_column_break_vbtwc","custom_bin_no","custom_image_url","custom_material","custom_style_code","custom_fashion","custom_item_name_ar")]]
+        "filters": [["name", "in", ("Sales Order Item-custom_return_status","Sales Order-custom_return_status","custom_dcs", "custom_vendor_cost","custom_exchange_rate","custom_vendor_currency","custom_vendor_name","custom_vendor_code","custom_column_break_vbtwc","custom_bin_no","custom_image_url","custom_material","custom_style_code","custom_fashion","custom_item_name_ar")]]
     }
 ]

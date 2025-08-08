@@ -85,22 +85,76 @@ def setup_custom_fields():
                     **field
                 }).insert(ignore_permissions=True)
 
-def update_doc_status(doc, status, response=None, increment_retry=False,payload=None):
-    """Update document sync status and log response"""
-    doc.reload()
-    doc.custom_animo_sync_status = status
-    doc.custom_animo_last_sync = frappe.utils.now()
+def update_doc_status(doc, status, response=None, increment_retry=False, payload=None):
+    """
+    Update document sync status without retry logic
+    Uses direct database update as primary method with fallback to doc.save()
+    """
+    try:
+        # Get document reference
+        docname = doc.name if hasattr(doc, 'name') else doc
+        doctype = doc.doctype if hasattr(doc, 'doctype') else "Sales Order"
+        
+        # Prepare update values
+        update_values = {
+            "custom_animo_sync_status": status,
+            "custom_animo_last_sync": frappe.utils.now(),
+            "modified": frappe.utils.now()
+        }
+        
+        if increment_retry:
+            current_count = frappe.db.get_value(doctype, docname, "custom_animo_retry_count") or 0
+            update_values["custom_animo_retry_count"] = current_count + 1
+        
+        if response is not None:
+            update_values["custom_animo_api_response"] = json.dumps(response, indent=2)
+        
+        if payload is not None:
+            update_values["custom_animo_api_payload"] = json.dumps(payload, indent=2)
+        
+        # Try direct SQL update first (most reliable)
+        frappe.db.set_value(doctype, docname, update_values)
+        frappe.db.commit()
+        
+        # Verify update
+        updated_status = frappe.db.get_value(doctype, docname, "custom_animo_sync_status")
+        if updated_status == status:
+            return True
+            
+        # If direct update didn't work, try document save
+        doc = frappe.get_doc(doctype, docname)
+        for field, value in update_values.items():
+            if doc.meta.has_field(field):
+                doc.set(field, value)
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        
+        return True
+        
+    except Exception as e:
+        frappe.logger().error(
+            f"Failed to update {doctype} {docname} status to {status}\n"
+            f"Error: {str(e)}\n"
+            f"Response: {response}"
+        )
+        frappe.db.rollback()
+        return False
+# def update_doc_status(doc, status, response=None, increment_retry=False,payload=None):
+#     """Update document sync status and log response"""
+#     doc.reload()
+#     doc.custom_animo_sync_status = status
+#     doc.custom_animo_last_sync = frappe.utils.now()
     
-    if increment_retry:
-        doc.custom_animo_retry_count = (doc.custom_animo_retry_count or 0) + 1
+#     if increment_retry:
+#         doc.custom_animo_retry_count = (doc.custom_animo_retry_count or 0) + 1
     
-    if response:
-        doc.custom_animo_api_response = json.dumps(response, indent=2)
-    if payload:
-        doc.custom_animo_api_payload = json.dumps(payload, indent=4)
+#     if response:
+#         doc.custom_animo_api_response = json.dumps(response, indent=2)
+#     if payload:
+#         doc.custom_animo_api_payload = json.dumps(payload, indent=4)
     
-    doc.save(ignore_permissions=True)
-    frappe.db.commit()
+#     doc.save(ignore_permissions=True)
+#     frappe.db.commit()
 
 def log_comment(doc, title, content):
     """Add a comment to the document"""
@@ -121,6 +175,7 @@ def log_comment(doc, title, content):
 )
 def make_animo_api_call(url, payload):
     """Make API call with retry logic"""
+    print(ANIMO_API_CREDENTIALS)
     response = requests.post(
         url,
         json=payload,
@@ -128,6 +183,8 @@ def make_animo_api_call(url, payload):
         headers={"Content-Type": "application/json"},
         timeout=API_TIMEOUT
     )
+    print(response)
+    print(response.text)
     response.raise_for_status()
     return response.json()
 
@@ -137,6 +194,11 @@ def enqueue_animo_order_sync(doc, method):
     """Enqueue Sales Order sync with Animo"""
     if isinstance(doc, str):
         doc = frappe.get_doc("Sales Order", doc)
+     # Skip if already successfully synced
+    print(doc.get("custom_animo_sync_status"))
+    if doc.get("custom_animo_sync_status") == "Success":
+        log_comment(doc, "Animo Sync", "Already synced successfully - skipping")
+        return
     
     setup_custom_fields()
     update_doc_status(doc, SYNC_STATUSES["QUEUED"])
@@ -155,7 +217,10 @@ def enqueue_animo_invoice_sync(doc, method):
     """Enqueue Sales Invoice sync with Animo"""
     if isinstance(doc, str):
         doc = frappe.get_doc("Sales Invoice", doc)
-    
+     # Skip if already successfully synced
+    if doc.get("custom_animo_sync_status") == "Success":
+        log_comment(doc, "Animo Sync", "Already synced successfully - skipping")
+        return
     setup_custom_fields()
     update_doc_status(doc, SYNC_STATUSES["QUEUED"])
     
@@ -173,6 +238,10 @@ def enqueue_animo_order_cancel(doc, method):
     """Enqueue Sales Order cancellation with Animo"""
     if isinstance(doc, str):
         doc = frappe.get_doc("Sales Order", doc)
+     # Skip if already successfully synced
+    if doc.get("custom_animo_sync_status") == "Success":
+        log_comment(doc, "Animo Sync", "Already synced successfully - skipping")
+        return
     
     enqueue(
         "printechs_fashion.animo_connector.cancel_sales_order_with_animo",
@@ -186,26 +255,41 @@ def enqueue_animo_order_cancel(doc, method):
 # Background Job Functions
 def sync_sales_order_with_animo(docname):
     """Background job to sync Sales Order with Animo"""
-    doc = frappe.get_doc("Sales Order", docname)
-    update_doc_status(doc, SYNC_STATUSES["PROCESSING"])
-    payload=None
     try:
+        doc = frappe.get_doc("Sales Order", docname)
+        
+        # Set status to Processing immediately
+        update_doc_status(doc, SYNC_STATUSES["PROCESSING"])
+        
         payload = prepare_sales_order_payload(doc)
         url = "http://sodanimo.dyndns.org:8001/api/Order/CreateOrder"
         
         response = make_animo_api_call(url, payload)
-        update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, increment_retry=False, payload=payload)
-        log_comment(doc, "Sync Success", f"Order synced successfully with Animo")
         
+        # Check for specific success response pattern
+        if isinstance(response, dict) and response.get("orderID", "").startswith("Sales Order No :"):
+            update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, payload=payload)
+            log_comment(doc, "Sync Success", f"Order synced successfully with Animo. Response: {response}")
+        else:
+            # Handle unexpected response format
+            error_msg = f"Unexpected response format from Animo: {response}"
+            frappe.logger().error(error_msg)
+            update_doc_status(doc, SYNC_STATUSES["FAILED"], {"error": error_msg}, increment_retry=True, payload=payload)
+            log_comment(doc, "Sync Failed", error_msg)
+            
     except RequestException as e:
-        frappe.logger().error(f"Animo API connection error for {doc.name}: {str(e)}")
+        error_msg = f"Animo API connection error: {str(e)}"
+        frappe.logger().error(error_msg)
+        doc = frappe.get_doc("Sales Order", docname)
         update_doc_status(doc, SYNC_STATUSES["CONNECTION_ERROR"], {"error": str(e)}, increment_retry=True, payload=payload)
-        log_comment(doc, "Sync Failed", f"Connection error: {str(e)}")
+        log_comment(doc, "Sync Failed", error_msg)
         
     except Exception as e:
-        frappe.logger().error(f"Animo API error for {doc.name}: {str(e)}")
+        error_msg = f"Animo API error: {str(e)}"
+        frappe.logger().error(error_msg)
+        doc = frappe.get_doc("Sales Order", docname)
         update_doc_status(doc, SYNC_STATUSES["FAILED"], {"error": str(e)}, increment_retry=True, payload=payload)
-        log_comment(doc, "Sync Failed", f"Error: {str(e)}")
+        log_comment(doc, "Sync Failed", error_msg)
 
 def sync_sales_invoice_with_animo(docname):
     """Background job to sync Sales Invoice with Animo"""
@@ -220,18 +304,30 @@ def sync_sales_invoice_with_animo(docname):
             url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleReturn"
         
         response = make_animo_api_call(url, payload)
-        update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, increment_retry=False, payload=payload)
-        log_comment(doc, "Sync Success", f"Invoice synced successfully with Animo")
-        
+        # Check for specific success response pattern
+        if isinstance(response, dict) and response.get("orderID", "").startswith("Sales Order No :"):
+            update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, payload=payload)
+            log_comment(doc, "Sync Success", f"Order synced successfully with Animo. Response: {response}")
+        else:
+            # Handle unexpected response format
+            error_msg = f"Unexpected response format from Animo: {response}"
+            frappe.logger().error(error_msg)
+            update_doc_status(doc, SYNC_STATUSES["FAILED"], {"error": error_msg}, increment_retry=True, payload=payload)
+            log_comment(doc, "Sync Failed", error_msg)
+            
     except RequestException as e:
-        frappe.logger().error(f"Animo API connection error for {doc.name}: {str(e)}")
+        error_msg = f"Animo API connection error: {str(e)}"
+        frappe.logger().error(error_msg)
+        doc = frappe.get_doc("Sales Order", docname)
         update_doc_status(doc, SYNC_STATUSES["CONNECTION_ERROR"], {"error": str(e)}, increment_retry=True, payload=payload)
-        log_comment(doc, "Sync Failed", f"Connection error: {str(e)}")
+        log_comment(doc, "Sync Failed", error_msg)
         
     except Exception as e:
-        frappe.logger().error(f"Animo API error for {doc.name}: {str(e)}")
+        error_msg = f"Animo API error: {str(e)}"
+        frappe.logger().error(error_msg)
+        doc = frappe.get_doc("Sales Order", docname)
         update_doc_status(doc, SYNC_STATUSES["FAILED"], {"error": str(e)}, increment_retry=True, payload=payload)
-        log_comment(doc, "Sync Failed", f"Error: {str(e)}")
+        log_comment(doc, "Sync Failed", error_msg)
 
 def cancel_sales_order_with_animo(docname):
     """Background job to cancel Sales Order with Animo"""
@@ -263,17 +359,46 @@ def cancel_sales_order_with_animo(docname):
 
 # Payload Preparation Functions
 def prepare_sales_order_payload(doc):
-    """Prepare payload for Sales Order"""
-    
+    """Prepare payload for Sales Order with precise tax calculation"""
     address = frappe.get_doc("Address", doc.customer_address)
     contact = frappe.get_doc("Contact", doc.contact_person)
     
+    # Calculate base amounts
     basic_amt = sum(item.price_list_rate * item.qty for item in doc.items)
     item_level_discount = sum(item.discount_amount * item.qty or 0 for item in doc.items)
     global_discount = doc.discount_amount or 0
     total_discount = item_level_discount + global_discount
-    tax_amt = calculate_tax_amount(basic_amt, total_discount)
+    
+    # Calculate item taxes first
+    items = []
+    total_item_tax = 0
+    
+    for idx, item in enumerate(doc.items):
+        gross_amount = item.qty * item.price_list_rate
+        discount = calculate_discount((item.qty * item.discount_amount), item.distributed_discount_amount)
+        item_total = gross_amount - discount
+        tax = calculate_tax_amount(gross_amount, discount)
+        total_item_tax += tax
+        
+        items.append({
+            "sl": idx + 1,
+            "Barcode": item.item_code,
+            "Qty": item.qty,
+            "Rate": item.price_list_rate,
+            "BatchNo": "NA",
+            "SerialNo": "NA",
+            "ItemDesc": item.item_name,
+            "Amount": gross_amount,
+            "Discount": discount,
+            "TaxAmt": round(tax, 2),
+            "ItemTotal": round(item_total, 2),
+            "TaxableValue": round(item_total - tax, 2),
+            "TaxPercent": 15
+        })
 
+    # Calculate header tax amount based on items to ensure consistency
+    header_tax_amt = round(total_item_tax, 2)
+    
     payload = {
         "Header": {
             "CompCode": "AR01C00001",
@@ -291,57 +416,35 @@ def prepare_sales_order_payload(doc):
             "BillingAddress1": address.address_line1 or "Suite 4B",
             "BillingZip": address.pincode or "560001",
             "BillingCountry": address.country or "SAUDI ARABIA",
-            "ShippingName":  doc.customer_name,
-            "ShippingStreet": address.address_line2  or "123 Main Street",
+            "ShippingName": doc.customer_name,
+            "ShippingStreet": address.address_line2 or "123 Main Street",
             "ShippingAddress1": address.address_line1 or "Suite 4B",
             "ShippingZip": address.pincode or "560001",
             "ShippingCountry": address.country or "SAUDI ARABIA",
             "TaxMethod": "VAT-Inclusive",
-            "ShippingMethod":  "Standard",
+            "ShippingMethod": "Standard",
             "ShippingStatus": "Pending",
-            "PaymentMethod":  "Prepaid",
+            "PaymentMethod": "Prepaid",
             "PaymentStatus": "Paid",
             "ItemsCount": len(doc.items),
             "TotalQty": sum(item.qty for item in doc.items),
-            "BasicAmt": basic_amt,
-            "Discount": total_discount,
-            "TaxAmt": tax_amt,
-            "charges": doc.total_taxes_and_charges,
-            "SubTotal": (basic_amt - total_discount) + doc.total_taxes_and_charges,
-            "RoundOff": doc.rounding_adjustment,
-            "Total": doc.grand_total,
-            "Remarks":  "Deliver ASAP",
+            "BasicAmt": round(basic_amt, 2),
+            "Discount": round(total_discount, 2),
+            "TaxAmt": header_tax_amt,  # Use the sum of item taxes
+            "charges": round(doc.total_taxes_and_charges, 2),
+            "SubTotal": round((basic_amt - total_discount) + doc.total_taxes_and_charges, 2),
+            "RoundOff": round(doc.rounding_adjustment, 2),
+            "Total": round(doc.grand_total, 2),
+            "Remarks": "Deliver ASAP",
             "User": "order_api_user"
         },
-        "Items": []
+        "Items": items
     }
-
-    for idx, item in enumerate(doc.items):
-        gross_amount = item.qty * item.price_list_rate
-        discount = calculate_discount((item.qty * item.discount_amount), item.distributed_discount_amount)
-        item_total = gross_amount - discount
-        tax = calculate_tax_amount(gross_amount, discount)
-        
-        payload["Items"].append({
-            "sl": idx + 1,
-            "Barcode": item.item_code,
-            "Qty": item.qty,
-            "Rate": item.price_list_rate,
-            "BatchNo":  "NA",
-            "SerialNo":  "NA",
-            "ItemDesc": item.item_name,
-            "Amount": gross_amount,
-            "Discount": discount,
-            "TaxAmt": tax,
-            "ItemTotal": item_total,
-            "TaxableValue": round(item_total - tax, 2),
-            "TaxPercent": 15
-        })
 
     return payload
 
 def prepare_sales_invoice_payload(doc):
-    """Prepare payload for Sales Invoice"""
+    """Prepare payload for Sales Invoice with precise tax calculation"""
     reference_no = doc.items[0].sales_order if doc.items and hasattr(doc.items[0], "sales_order") else doc.name
     if doc.is_return == 1:
         reference_no = doc.return_against
@@ -349,12 +452,42 @@ def prepare_sales_invoice_payload(doc):
     address = frappe.get_doc("Address", doc.customer_address)
     contact = frappe.get_doc("Contact", doc.contact_person)
     
+    # Calculate base amounts
     basic_amt = sum(item.price_list_rate * item.qty for item in doc.items)
     item_level_discount = sum(item.discount_amount * item.qty or 0 for item in doc.items)
     global_discount = doc.discount_amount or 0
     total_discount = item_level_discount + global_discount
-    tax_amt = calculate_tax_amount(basic_amt, total_discount)
+    
+    # Calculate item taxes first
+    items = []
+    total_item_tax = 0
+    
+    for idx, item in enumerate(doc.items):
+        gross_amount = item.qty * item.price_list_rate
+        discount = calculate_discount((item.qty * item.discount_amount), item.distributed_discount_amount)
+        item_total = gross_amount - discount
+        tax = calculate_tax_amount(gross_amount, discount)
+        total_item_tax += tax
+        
+        items.append({
+            "sl": idx + 1,
+            "Barcode": item.item_code,
+            "Qty": item.qty,
+            "Rate": item.price_list_rate,
+            "BatchNo": "NA",
+            "SerialNo": "NA",
+            "ItemDesc": item.item_name,
+            "Amount": round(gross_amount, 2),
+            "Discount": round(discount, 2),
+            "TaxAmt": round(tax, 2),
+            "ItemTotal": round(item_total, 2),
+            "TaxableValue": round(item_total - tax, 2),
+            "TaxPercent": 15
+        })
 
+    # Calculate header tax amount based on items to ensure consistency
+    header_tax_amt = round(total_item_tax, 2)
+    
     payload = {
         "Header": {
             "CompCode": "AR01C00001",
@@ -365,70 +498,49 @@ def prepare_sales_invoice_payload(doc):
             "ReferenceNo": reference_no,
             "RefOrderNo": doc.name,
             "CustomerName": doc.customer_name,
-           "EmailID": contact.email_id or "customer@example.com",
+            "EmailID": contact.email_id or "customer@example.com",
             "PhoneNo": contact.phone or "9876543210",
             "BillingName": doc.customer_name,
             "BillingStreet": address.address_line2 or "123 Main Street",
             "BillingAddress1": address.address_line1 or "Suite 4B",
             "BillingZip": address.pincode or "560001",
             "BillingCountry": address.country or "SAUDI ARABIA",
-            "ShippingName":  doc.customer_name,
-            "ShippingStreet": address.address_line2  or "123 Main Street",
+            "ShippingName": doc.customer_name,
+            "ShippingStreet": address.address_line2 or "123 Main Street",
             "ShippingAddress1": address.address_line1 or "Suite 4B",
             "ShippingZip": address.pincode or "560001",
             "ShippingCountry": address.country or "SAUDI ARABIA",
             "TaxMethod": "VAT-Inclusive",
-            "ShippingMethod":  "Standard",
+            "ShippingMethod": "Standard",
             "ShippingStatus": "Pending",
             "PaymentMethod": "Prepaid",
             "PaymentStatus": "Paid" if doc.outstanding_amount == 0 else "Pending",
             "ItemsCount": len(doc.items),
             "TotalQty": sum(item.qty for item in doc.items),
-            "BasicAmt": basic_amt,
-            "Discount": total_discount,
-            "TaxAmt": tax_amt,
-            "charges": doc.total_taxes_and_charges,
-            "SubTotal": (basic_amt - total_discount) + doc.total_taxes_and_charges,
-            "RoundOff": doc.rounding_adjustment,
-            "Total": doc.grand_total,
-            "Remarks":  "Deliver ASAP",
+            "BasicAmt": round(basic_amt, 2),
+            "Discount": round(total_discount, 2),
+            "TaxAmt": header_tax_amt,  # Use the sum of item taxes
+            "charges": round(doc.total_taxes_and_charges, 2),
+            "SubTotal": round((basic_amt - total_discount) + doc.total_taxes_and_charges, 2),
+            "RoundOff": round(doc.rounding_adjustment, 2),
+            "Total": round(doc.grand_total, 2),
+            "Remarks": "Deliver ASAP",
             "User": "order_api_user"
         },
-        "Items": []
+        "Items": items
     }
-
-    for idx, item in enumerate(doc.items):
-        gross_amount = item.qty * item.price_list_rate
-        discount = calculate_discount((item.qty * item.discount_amount), item.distributed_discount_amount)
-        item_total = gross_amount - discount
-        tax = calculate_tax_amount(gross_amount, discount)
-        
-        payload["Items"].append({
-            "sl": idx + 1,
-            "Barcode": item.item_code,
-            "Qty": item.qty,
-            "Rate": item.price_list_rate,
-            "BatchNo":  "NA",
-            "SerialNo": "NA",
-            "ItemDesc": item.item_name,
-            "Amount": gross_amount,
-            "Discount": discount,
-            "TaxAmt": tax,
-            "ItemTotal": item_total,
-            "TaxableValue": round(item_total - tax, 2),
-            "TaxPercent": 15
-        })
-
     return payload
 
 # Helper Functions
 def calculate_tax_amount(amount, discount):
+    """Calculate tax amount with precise rounding"""
     net = amount - discount
-    return round(net * 15 / 115, 2)
+    tax = net * 15 / 115
+    return round(tax, 2)  # Round to 2 decimal places for halala precision
 
 def calculate_discount(item_discount, global_discount):
+    """Calculate total discount with precise rounding"""
     return round((item_discount or 0) + (global_discount or 0), 2)
-
 # Manual Sync Endpoints
 @frappe.whitelist()
 def retry_failed_sync(doctype, docname):
