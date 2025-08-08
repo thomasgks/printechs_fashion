@@ -298,16 +298,18 @@ def sync_sales_invoice_with_animo(docname):
     payload=None
     try:
         payload = prepare_sales_invoice_payload(doc)
+        print(payload)
         url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleInvoice"
         
         if doc.is_return == 1:
             url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleReturn"
         
         response = make_animo_api_call(url, payload)
+        print(response)
         # Check for specific success response pattern
-        if isinstance(response, dict) and response.get("orderID", "").startswith("Sales Order No :"):
+        if isinstance(response, dict) and response.get("orderID", "").startswith("Sales INvoice No :"):
             update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, payload=payload)
-            log_comment(doc, "Sync Success", f"Order synced successfully with Animo. Response: {response}")
+            log_comment(doc, "Sync Success", f"Invoice synced successfully with Animo. Response: {response}")
         else:
             # Handle unexpected response format
             error_msg = f"Unexpected response format from Animo: {response}"
@@ -318,14 +320,14 @@ def sync_sales_invoice_with_animo(docname):
     except RequestException as e:
         error_msg = f"Animo API connection error: {str(e)}"
         frappe.logger().error(error_msg)
-        doc = frappe.get_doc("Sales Order", docname)
+        doc = frappe.get_doc("Sales Invoice", docname)
         update_doc_status(doc, SYNC_STATUSES["CONNECTION_ERROR"], {"error": str(e)}, increment_retry=True, payload=payload)
         log_comment(doc, "Sync Failed", error_msg)
         
     except Exception as e:
         error_msg = f"Animo API error: {str(e)}"
         frappe.logger().error(error_msg)
-        doc = frappe.get_doc("Sales Order", docname)
+        doc = frappe.get_doc("Sales Invoice", docname)
         update_doc_status(doc, SYNC_STATUSES["FAILED"], {"error": str(e)}, increment_retry=True, payload=payload)
         log_comment(doc, "Sync Failed", error_msg)
 
@@ -443,11 +445,12 @@ def prepare_sales_order_payload(doc):
 
     return payload
 
-def prepare_sales_invoice_payload(doc):
+def prepare_sales_invoice_payload1(doc):
     """Prepare payload for Sales Invoice with precise tax calculation"""
     reference_no = doc.items[0].sales_order if doc.items and hasattr(doc.items[0], "sales_order") else doc.name
-    if doc.is_return == 1:
-        reference_no = doc.return_against
+    print(reference_no)
+    # if doc.is_return == 1:
+    #     reference_no = doc.return_against
 
     address = frappe.get_doc("Address", doc.customer_address)
     contact = frappe.get_doc("Contact", doc.contact_person)
@@ -522,7 +525,7 @@ def prepare_sales_invoice_payload(doc):
             "TaxAmt": header_tax_amt,  # Use the sum of item taxes
             "charges": round(doc.total_taxes_and_charges, 2),
             "SubTotal": round((basic_amt - total_discount) + doc.total_taxes_and_charges, 2),
-            "RoundOff": round(doc.rounding_adjustment, 2),
+            #"RoundOff": round(doc.rounding_adjustment, 2),
             "Total": round(doc.grand_total, 2),
             "Remarks": "Deliver ASAP",
             "User": "order_api_user"
@@ -531,6 +534,95 @@ def prepare_sales_invoice_payload(doc):
     }
     return payload
 
+def prepare_sales_invoice_payload(doc):
+    """Prepare payload for Sales Invoice/Return with positive values for returns"""
+    # Get reference number (original sales invoice for returns)
+    reference_no = (doc.items[0].sales_order if doc.items and hasattr(doc.items[0], "sales_order") else doc.name)
+    
+    address = frappe.get_doc("Address", doc.customer_address)
+    contact = frappe.get_doc("Contact", doc.contact_person)
+    
+    # Convert negative values to positive for returns
+    convert_to_positive = 1 if doc.is_return == 1 else -1 if doc.is_debit_note == 1 else 1
+    
+    # Calculate base amounts (absolute values for returns)
+    basic_amt = abs(sum(item.price_list_rate * item.qty for item in doc.items))
+    item_level_discount = abs(sum(item.discount_amount * item.qty or 0 for item in doc.items))
+    global_discount = abs(doc.discount_amount or 0)
+    total_discount = item_level_discount + global_discount
+    
+    # Calculate item taxes first
+    items = []
+    total_item_tax = 0
+    
+    for idx, item in enumerate(doc.items):
+        gross_amount = abs(item.qty * item.price_list_rate)
+        discount = abs(calculate_discount((item.qty * item.discount_amount), item.distributed_discount_amount))
+        item_total = gross_amount - discount
+        tax = abs(calculate_tax_amount(gross_amount, discount))
+        total_item_tax += tax
+        
+        items.append({
+            "sl": idx + 1,
+            "Barcode": item.item_code,
+            "Qty": abs(item.qty),  # Positive quantity
+            "Rate": abs(item.price_list_rate),  # Positive rate
+            "BatchNo": item.batch_no or "NA",
+            "SerialNo": item.serial_no or "NA",
+            "ItemDesc": item.item_name,
+            "Amount": round(gross_amount, 2),
+            "Discount": round(discount, 2),
+            "TaxAmt": round(tax, 2),
+            "ItemTotal": round(item_total, 2),
+            "TaxableValue": round(item_total - tax, 2),
+            "TaxPercent": 15
+        })
+
+    # Calculate header tax amount based on items to ensure consistency
+    header_tax_amt = round(total_item_tax, 2)
+    
+    payload = {
+        "Header": {
+            "CompCode": "AR01C00001",
+            "OrgCode": "1010",
+            "OrderType":  "OrderAPI",
+            "SaleChannel": "SODAS ECOMM",
+            "DocDate": str(get_datetime(doc.posting_date).date()),
+            "ReferenceNo": reference_no,
+            "RefOrderNo": doc.name,
+            "CustomerName": doc.customer_name,
+            "EmailID": contact.email_id or "customer@example.com",
+            "PhoneNo": contact.phone or "9876543210",
+            "BillingName": doc.customer_name,
+            "BillingStreet": address.address_line2 or "123 Main Street",
+            "BillingAddress1": address.address_line1 or "Suite 4B",
+            "BillingZip": address.pincode or "560001",
+            "BillingCountry": address.country or "SAUDI ARABIA",
+            "ShippingName": doc.customer_name,
+            "ShippingStreet": address.address_line2 or "123 Main Street",
+            "ShippingAddress1": address.address_line1 or "Suite 4B",
+            "ShippingZip": address.pincode or "560001",
+            "ShippingCountry": address.country or "SAUDI ARABIA",
+            "TaxMethod": "VAT-Inclusive",
+            "ShippingMethod": "Standard",
+            "ShippingStatus": "Pending",
+            "PaymentMethod": "Prepaid",
+            "PaymentStatus": "Paid" if doc.outstanding_amount == 0 else "Pending",
+            "ItemsCount": len(doc.items),
+            "TotalQty": abs(sum(item.qty for item in doc.items)),  # Positive total quantity
+            "BasicAmt": round(basic_amt, 2),
+            "Discount": round(total_discount, 2),
+            "TaxAmt": header_tax_amt,
+            "charges": abs(round(doc.total_taxes_and_charges, 2)),
+            "SubTotal": round((basic_amt - total_discount) + abs(doc.total_taxes_and_charges), 2),
+            "Total": abs(round(doc.grand_total, 2)),
+            "Remarks": "Return" if doc.is_return == 1 else "Deliver ASAP",
+            "User": "order_api_user"
+        },
+        "Items": items
+    }
+
+    return payload
 # Helper Functions
 def calculate_tax_amount(amount, discount):
     """Calculate tax amount with precise rounding"""
