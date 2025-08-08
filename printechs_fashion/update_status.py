@@ -17,13 +17,13 @@ def update_return_status_dn(delivery_note, status):
             frappe.db.set_value(
                 "Sales Order Item",
                 {"parent": item.against_sales_order, "name": item.so_detail},
-                "return_status",
+                "custom_return_status",
                 status
             )
 
     # Update return_status in Sales Order
     for so in affected_sales_orders:
-        frappe.db.set_value("Sales Order", so, "return_status", status)
+        frappe.db.set_value("Sales Order", so, "custom_return_status", status)
 
 # Hook: on_submit
 def on_submit_dn(doc, method):
@@ -49,13 +49,13 @@ def update_return_status_si(invoice, status):
             frappe.db.set_value(
                 "Sales Order Item",
                 {"parent": item.sales_order, "name": item.so_detail},
-                "return_status",
+                "custom_return_status",
                 status
             )
 
     # Update return_status in Sales Order
     for so in affected_sales_orders:
-        frappe.db.set_value("Sales Order", so, "return_status", status)
+        frappe.db.set_value("Sales Order", so, "custom_return_status", status)
 
 # Hook: on_submit
 def on_submit_si(doc, method):
