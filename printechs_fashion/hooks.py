@@ -146,10 +146,10 @@ doc_events = {
         "on_cancel": "printechs_fashion.animo_connector.enqueue_animo_order_cancel"
     },
    "Sales Invoice": {
-        "on_submit": [
-            "printechs_fashion.animo_connector.enqueue_animo_invoice_sync",
-            "printechs_fashion.update_status.on_submit_si",
-        ],
+        "on_submit": [ 
+            "printechs_fashion.animo_connector.enqueue_animo_invoice_sync",          
+            "printechs_fashion.update_status.on_submit_si"
+        ],        
         "on_cancel": [
             "printechs_fashion.update_status.on_submit_si"
         ]

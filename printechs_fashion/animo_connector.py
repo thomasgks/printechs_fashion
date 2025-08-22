@@ -239,9 +239,9 @@ def enqueue_animo_order_cancel(doc, method):
     if isinstance(doc, str):
         doc = frappe.get_doc("Sales Order", doc)
      # Skip if already successfully synced
-    if doc.get("custom_animo_sync_status") == "Success":
-        log_comment(doc, "Animo Sync", "Already synced successfully - skipping")
-        return
+    # if doc.get("custom_animo_sync_status") == "Success":
+    #     log_comment(doc, "Animo Sync", "Already synced successfully - skipping")
+    #     return
     
     enqueue(
         "printechs_fashion.animo_connector.cancel_sales_order_with_animo",
@@ -295,19 +295,38 @@ def sync_sales_invoice_with_animo(docname):
     """Background job to sync Sales Invoice with Animo"""
     doc = frappe.get_doc("Sales Invoice", docname)
     update_doc_status(doc, SYNC_STATUSES["PROCESSING"])
-    payload=None
+    payload = None
+    
     try:
         payload = prepare_sales_invoice_payload(doc)
         print(payload)
-        url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleInvoice"
-        
+        url=""
+        # Determine the appropriate API endpoint
         if doc.is_return == 1:
             url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleReturn"
+            success_pattern = "Sales Return No :"
+        else:
+            url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleInvoice"
+            success_pattern = "Sales Invoice No :"
         
         response = make_animo_api_call(url, payload)
         print(response)
-        # Check for specific success response pattern
-        if isinstance(response, dict) and response.get("orderID", "").startswith("Sales INvoice No :"):
+        
+        # Improved success checking logic
+        if (isinstance(response, dict) and "orderID" in response and 
+            isinstance(response["orderID"], str) and 
+            "Duplicate Document" in response["orderID"] and 
+            "already exists" in response["orderID"]):
+            
+            # Treat duplicate as success since it means the document was already synced
+            update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, payload=payload)
+            log_comment(doc, "Sync Success", f"Document already exists in Animo: {response['orderID']}")
+            
+        # Check for normal success response
+        elif (isinstance(response, dict) and 
+            response.get("orderID", "") and 
+            success_pattern in response["orderID"] and 
+            "successfully" in response["orderID"]):
             update_doc_status(doc, SYNC_STATUSES["SUCCESS"], response, payload=payload)
             log_comment(doc, "Sync Success", f"Invoice synced successfully with Animo. Response: {response}")
         else:
@@ -346,7 +365,7 @@ def cancel_sales_order_with_animo(docname):
         url = "http://sodanimo.dyndns.org:8001/api/Order/CancelOrder"
         response = make_animo_api_call(url, payload)
         
-        log_comment(doc, "Cancel Success", f"Order cancelled successfully with Animo")
+        log_comment(doc, "Cancel Success", f"Order cancelled successfully with Animo[{json.dumps(response, indent=2)}]")
         return response
         
     except RequestException as e:
@@ -445,7 +464,7 @@ def prepare_sales_order_payload(doc):
 
     return payload
 
-def prepare_sales_invoice_payload1(doc):
+def prepare_sales_invoice_payload_old(doc):
     """Prepare payload for Sales Invoice with precise tax calculation"""
     reference_no = doc.items[0].sales_order if doc.items and hasattr(doc.items[0], "sales_order") else doc.name
     print(reference_no)
