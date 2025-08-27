@@ -59,11 +59,11 @@ def insert_item_attribute_value_temp(attribute_value, abbr, parent):
 def insert_item_attribute_value(attribute_value, abbr, parent):
     try:
         # Check if the attribute value exists
-        exists = frappe.db.exists({
-            "doctype": "Item Attribute Value",
-            "attribute_value": attribute_value,
-            "parent": parent
-        })
+        exists = frappe.db.sql("""
+            SELECT name FROM `tabItem Attribute Value`
+            WHERE BINARY attribute_value = %s AND BINARY parent = %s
+            LIMIT 1
+        """, (attribute_value, parent))
 
         if exists:
             return {
