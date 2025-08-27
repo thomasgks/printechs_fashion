@@ -8,23 +8,25 @@ def test():
 @frappe.whitelist()
 def check_item_attribute_value(attribute_value, parent):
     try:
-        # Query to check if the attribute value exists
-        exists = frappe.db.exists({
-            "doctype": "Item Attribute Value",
-            "attribute_value": attribute_value,
-            "parent": parent
-        })
+        result = frappe.db.sql("""
+            SELECT name FROM `tabItem Attribute Value`
+            WHERE BINARY attribute_value = %s AND BINARY parent = %s
+            LIMIT 1
+        """, (attribute_value, parent))
 
         return {
             "status": "success",
-            "exists": bool(exists)
+            "exists": bool(result)
         }
+
     except Exception as e:
         frappe.log_error(message=e, title="Item Attribute Value Check Error")
         return {
             "status": "error",
             "message": str(e)
         }
+
+
         
 @frappe.whitelist()
 def insert_item_attribute_value_temp(attribute_value, abbr, parent):
