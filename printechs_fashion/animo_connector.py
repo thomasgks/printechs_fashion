@@ -8,7 +8,7 @@ from requests.exceptions import RequestException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Constants
-ANIMO_API_CREDENTIALS = ("admin", "Animo@1")
+ANIMO_API_CREDENTIALS_TEST = ("admin", "Animo@1")
 API_TIMEOUT = 30  # seconds
 MAX_RETRIES = 3
 
@@ -175,6 +175,8 @@ def log_comment(doc, title, content):
 )
 def make_animo_api_call(url, payload):
     """Make API call with retry logic"""
+    settings = frappe.get_single("Animo Setting")
+    ANIMO_API_CREDENTIALS = (settings.username, settings.get_password("password"))
     print(ANIMO_API_CREDENTIALS)
     response = requests.post(
         url,
@@ -262,7 +264,9 @@ def sync_sales_order_with_animo(docname):
         update_doc_status(doc, SYNC_STATUSES["PROCESSING"])
         
         payload = prepare_sales_order_payload(doc)
-        url = "http://sodanimo.dyndns.org:8001/api/Order/CreateOrder"
+        
+        settings = frappe.get_single("Animo Setting")
+        url = settings.animo_api_base_url + "/api/Order/CreateOrder"
         
         response = make_animo_api_call(url, payload)
         
@@ -300,13 +304,15 @@ def sync_sales_invoice_with_animo(docname):
     try:
         payload = prepare_sales_invoice_payload(doc)
         print(payload)
+        settings = frappe.get_single("Animo Setting")
+        base_url = settings.animo_api_base_url 
         url=""
         # Determine the appropriate API endpoint
         if doc.is_return == 1:
-            url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleReturn"
+            url = base_url + "/api/Order/CreateSaleReturn"
             success_pattern = "Sales Return No :"
         else:
-            url = "http://sodanimo.dyndns.org:8001/api/Order/CreateSaleInvoice"
+            url = base_url + "/api/Order/CreateSaleInvoice"
             success_pattern = "Sales Invoice No :"
         
         response = make_animo_api_call(url, payload)
@@ -362,7 +368,9 @@ def cancel_sales_order_with_animo(docname):
             "User": "order_api_user"
         }
         
-        url = "http://sodanimo.dyndns.org:8001/api/Order/CancelOrder"
+        settings = frappe.get_single("Animo Setting")
+        url = settings.animo_api_base_url + "/api/Order/CancelOrder"
+        
         response = make_animo_api_call(url, payload)
         
         log_comment(doc, "Cancel Success", f"Order cancelled successfully with Animo[{json.dumps(response, indent=2)}]")
