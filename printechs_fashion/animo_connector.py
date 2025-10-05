@@ -389,7 +389,9 @@ def cancel_sales_order_with_animo(docname):
 # Payload Preparation Functions
 def prepare_sales_order_payload(doc):
     """Prepare payload for Sales Order with precise tax calculation"""
-    address = frappe.get_doc("Address", doc.customer_address)
+    address = None
+    if doc.customer_address:
+        address = frappe.get_doc("Address", doc.customer_address)
     contact = frappe.get_doc("Contact", doc.contact_person)
     
     # Calculate base amounts
@@ -441,15 +443,15 @@ def prepare_sales_order_payload(doc):
             "EmailID": contact.email_id or "customer@example.com",
             "PhoneNo": contact.phone or "9876543210",
             "BillingName": doc.customer_name,
-            "BillingStreet": address.address_line2 or "123 Main Street",
-            "BillingAddress1": address.address_line1 or "Suite 4B",
-            "BillingZip": address.pincode or "560001",
-            "BillingCountry": address.country or "SAUDI ARABIA",
+            "BillingStreet":   address.address_line2 if address and address.address_line2 else "",
+            "BillingAddress1": address.address_line1 if address and address.address_line1 else "",
+            "BillingZip": address.pincode if address and address.pincode else "",
+            "BillingCountry": address.country if address and address.country else "",
             "ShippingName": doc.customer_name,
-            "ShippingStreet": address.address_line2 or "123 Main Street",
-            "ShippingAddress1": address.address_line1 or "Suite 4B",
-            "ShippingZip": address.pincode or "560001",
-            "ShippingCountry": address.country or "SAUDI ARABIA",
+            "ShippingStreet": address.address_line2 if address and address.address_line2 else "",
+            "ShippingAddress1": address.address_line1 if address and address.address_line1 else "",
+            "ShippingZip": address.pincode if address and address.pincode else "",
+            "ShippingCountry": address.country if address and address.country else "",
             "TaxMethod": "VAT-Inclusive",
             "ShippingMethod": "Standard",
             "ShippingStatus": "Pending",
@@ -566,7 +568,9 @@ def prepare_sales_invoice_payload(doc):
     # Get reference number (original sales invoice for returns)
     reference_no = (doc.items[0].sales_order if doc.items and hasattr(doc.items[0], "sales_order") else doc.name)
     
-    address = frappe.get_doc("Address", doc.customer_address)
+    address = None
+    if doc.customer_address:
+        address = frappe.get_doc("Address", doc.customer_address)
     contact = frappe.get_doc("Contact", doc.contact_person)
     
     # Convert negative values to positive for returns
@@ -618,18 +622,15 @@ def prepare_sales_invoice_payload(doc):
             "ReferenceNo": reference_no,
             "RefOrderNo": doc.name,
             "CustomerName": doc.customer_name,
-            "EmailID": contact.email_id or "customer@example.com",
-            "PhoneNo": contact.phone or "9876543210",
-            "BillingName": doc.customer_name,
-            "BillingStreet": address.address_line2 or "123 Main Street",
-            "BillingAddress1": address.address_line1 or "Suite 4B",
-            "BillingZip": address.pincode or "560001",
-            "BillingCountry": address.country or "SAUDI ARABIA",
+            "BillingStreet":   address.address_line2 if address and address.address_line2 else "",
+            "BillingAddress1": address.address_line1 if address and address.address_line1 else "",
+            "BillingZip": address.pincode if address and address.pincode else "",
+            "BillingCountry": address.country if address and address.country else "",
             "ShippingName": doc.customer_name,
-            "ShippingStreet": address.address_line2 or "123 Main Street",
-            "ShippingAddress1": address.address_line1 or "Suite 4B",
-            "ShippingZip": address.pincode or "560001",
-            "ShippingCountry": address.country or "SAUDI ARABIA",
+            "ShippingStreet": address.address_line2 if address and address.address_line2 else "",
+            "ShippingAddress1": address.address_line1 if address and address.address_line1 else "",
+            "ShippingZip": address.pincode if address and address.pincode else "",
+            "ShippingCountry": address.country if address and address.country else "",
             "TaxMethod": "VAT-Inclusive",
             "ShippingMethod": "Standard",
             "ShippingStatus": "Pending",
